@@ -1,2 +1,3 @@
-# penalised-unexplainability-network-payments-per-claim-incurred
-A granular machine learning risk pricing and loss reserving model.
+# Penalised Unexplainability Network for Payments per Claim Incurred
+
+[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/ambv/black)
