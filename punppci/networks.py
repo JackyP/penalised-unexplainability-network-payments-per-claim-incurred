@@ -1,13 +1,23 @@
 import re
-from keras.layers import Input, Embedding, Lambda, Dense, Reshape, concatenate, add
+from keras.layers import (
+    Input,
+    Embedding,
+    Lambda,
+    Dense,
+    Reshape,
+    Layer,
+    concatenate,
+    add,
+)
 from keras import regularizers
 from keras.constraints import Constraint
+from keras.initializers import Zeros
 from keras import backend as K
 
 
 class NonNegativeSumOne(Constraint):
-    """ Constrains the weights incident to each hidden unit to have
-        non-negative and sum to one.
+    """ Constrains the weights incident to each hidden unit to be
+        non-negative and sum to one, and keep to a single value.
     # Arguments
         axis: integer, axis along which to calculate weight norms.
             For instance, in a `Dense` layer the weight matrix
@@ -26,12 +36,48 @@ class NonNegativeSumOne(Constraint):
         self.axis = axis
 
     def __call__(self, w):
+        # Non Negative
         w *= K.cast(K.greater_equal(w, 0.0), K.floatx())
 
-        return w / (K.epsilon() + K.sum(w, axis=self.axis, keepdims=True))
+        # Scale to sum to one
+        sc = w / (K.epsilon() + K.sum(w, axis=self.axis, keepdims=True))
+        return sc
 
     def get_config(self):
         return {"axis": self.axis}
+
+
+class NonNegativeWeightedAverage(Layer):
+    """ Layer that returns a non negative weighted average, with the same
+    weights for the whole vector"""
+
+    def __init__(self, output_dim=None, **kwargs):
+        self.output_dim = output_dim
+        super(NonNegativeWeightedAverage, self).__init__(**kwargs)
+
+    def build(self, input_shape):
+        assert isinstance(input_shape, list)
+        # Create a trainable weight variable for this layer.
+        self.kernel = self.add_weight(
+            name="kernel",
+            shape=(2,),
+            initializer="uniform",
+            constraint=NonNegativeSumOne(),
+            trainable=True,
+        )
+        super(NonNegativeWeightedAverage, self).build(
+            input_shape
+        )  # Be sure to call this at the end
+
+    def call(self, x):
+        assert isinstance(x, list)
+        a, b = x
+        return a * self.kernel[0] + b * self.kernel[1]
+
+    def compute_output_shape(self, input_shape):
+        assert isinstance(input_shape, list)
+        shape_a, shape_b = input_shape
+        return (shape_a[0], self.output_dim)
 
 
 """
@@ -65,7 +111,11 @@ def network_inputs(variate_features, categorical_features):
 
 
 def network_embeddings(
-    variate_inputs, categorical_inputs, categorical_dimensions, embedding_dim=1
+    variate_inputs,
+    categorical_inputs,
+    categorical_dimensions,
+    embedding_dim=1,
+    name_prefix="input_embed_",
 ):
     """ Add embeddings
 
@@ -83,8 +133,9 @@ def network_embeddings(
             Embedding(
                 output_dim=embedding_dim,
                 input_dim=n,
+                embeddings_initializer=Zeros(),
                 # embeddings_regularizer=regularizers.l1_l2(l1=l1, l2=l2),
-                name=re.sub(r"\W+", "", "input_embed_{}".format(x.name)),
+                name=re.sub(r"\W+", "", name_prefix + x.name),
             )(x)
         )
         for x, n in zip(categorical_inputs, categorical_dimensions)
@@ -105,6 +156,9 @@ def penalised_unexplainability_network(
     l2_res=0.01,
     dense_layers=3,
     dense_size=64,
+    n_dim=1,
+    bias_initializer="he_uniform",
+    activation="linear",
 ):
 
     """ Returns a keras network of the explainable + linear model
@@ -129,8 +183,10 @@ def penalised_unexplainability_network(
     # Linear outputs
     linear_outputs = [
         Dense(
-            1,
-            activation="linear",
+            n_dim,
+            activation=activation,
+            kernel_initializer=Zeros(),
+            bias_initializer=bias_initializer,
             kernel_regularizer=regularizers.l1_l2(l1=l1_lin, l2=l2_lin),
             name="{}linear_output_{}".format(name_prefix, response_name),
         )(inputs)
@@ -138,41 +194,36 @@ def penalised_unexplainability_network(
     ]
 
     # Residual Network (concat version)
-    concat = inputs
+    resnet = inputs
 
     for i in range(0, dense_layers):
         dense = Dense(
             dense_size,
-            activation="relu",
+            activation="selu",
             kernel_regularizer=regularizers.l1_l2(l1=l1_res, l2=l2_res),
             name="{}residual_layer_{}".format(name_prefix, i),
         )(inputs)
 
-        concat = concatenate([dense, concat])
+        resnet = concatenate([dense, resnet])
 
     residual_outputs = [
         Dense(
-            1,
-            activation="linear",
+            n_dim,
+            activation=activation,
+            bias_initializer=bias_initializer,
             kernel_regularizer=regularizers.l1_l2(l1=l1_res, l2=l2_res),
             name="{}residual_output_{}".format(name_prefix, response_name),
-        )(inputs)
+        )(resnet)
         for response_name in response
     ]
 
     # Output
     outputs = [
-        Dense(
-            1,
-            activation="linear",
-            kernel_constraint=NonNegativeSumOne(),
-            name=name_prefix + response_name,
-        )(concatenate([lin, res]))
+        NonNegativeWeightedAverage(
+            output_dim=n_dim,
+            name="{}blend_weight_{}".format(name_prefix, response_name),
+        )([lin, res])
         for lin, res, response_name in zip(linear_outputs, residual_outputs, response)
     ]
 
-    # if len(outputs) == 1:
-    #     return outputs[0]
-    # else:
-    #     return concatenate(outputs)
     return outputs

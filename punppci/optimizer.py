@@ -8,13 +8,13 @@ class PUNPPCILossOptimizer(BayesSearchCV):
         self,
         dataset,
         search_spaces={
-            "epochs": (1, 10),
+            "epochs": (5, 25),
             "l1_l2_lin_pricing": (1e-6, 1e6, "log-uniform"),
-            "l1_l2_res_pricing": (1e-2, 1e6, "log-uniform"),
+            "l1_l2_res_pricing": (1e-6, 1e6, "log-uniform"),
             "dense_layers_pricing": (1, 5),
             "dense_size_pricing": [16, 64, 256],
             "l1_l2_lin_development": (1e-6, 1e6, "log-uniform"),
-            "l1_l2_res_development": (1e-2, 1e6, "log-uniform"),
+            "l1_l2_res_development": (1e-6, 1e6, "log-uniform"),
             "dense_layers_development": (1, 5),
             "dense_size_development": [16, 64, 128],
             "clipnorm": (1, 10, "log-uniform"),
@@ -26,6 +26,8 @@ class PUNPPCILossOptimizer(BayesSearchCV):
         super(PUNPPCILossOptimizer, self).__init__(
             PUNPPCILossEstimator(dataset), search_spaces
         )
+        # Store preprocess
+        self.preprocess = dataset.preprocess
 
     def fit(self, X, y, w=None):
         self.fit_params = {"w": w, "verbose": 0}
@@ -56,10 +58,12 @@ class PUNPPCILossOptimizer(BayesSearchCV):
 
     def plot_pdp_frequency(self, dataset, feature):
         """ Explains frequency vs feature"""
+        self.best_estimator_.preprocess = self.preprocess
         return self.best_estimator_.plot_pdp_frequency(dataset, feature)
 
     def plot_pdp_size(self, dataset, feature):
         """ Explains severity vs feature"""
+        self.best_estimator_.preprocess = self.preprocess
         return self.best_estimator_.plot_pdp_size(dataset, feature)
 
     def ppci(self, dataset):

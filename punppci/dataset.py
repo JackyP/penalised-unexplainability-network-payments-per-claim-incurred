@@ -171,13 +171,49 @@ class Dataset:
         elif output == "projection":
             return tri_cumu
 
+    def count_model(self, model, output="ultimates"):
+        """ Apply a paid model and return ultimates or data """
+        # Weighted predictions
+        proj_paid_detail = model.predict(self.X())
+
+        # Apply weights
+        proj_paid_detail = proj_paid_detail.multiply(pd.Series(self.w()), axis=0)
+
+        # Apply dates
+        proj_paid_detail["origin_date"] = self.origin.values
+
+        proj_paid = proj_paid_detail.groupby(["origin_date"]).apply(
+            lambda g: g.sum(skipna=False)
+        )
+
+        # Fill
+        tri = self.claim_count.copy()
+        tri["origin_date"] = self.origin
+
+        # Incremental triangle
+        tri_incr = tri.groupby(["origin_date"]).apply(lambda g: g.sum(skipna=False))
+        tri_incr[tri_incr.isna()] = proj_paid[tri_incr.isna()]
+
+        # Cumulative triangle
+        tri_cumu = tri_incr.cumsum(axis=1)
+
+        # Ultimate
+        if output == "ultimates":
+            ultimate_counts = tri_cumu.iloc[:, -1]
+            return ultimate_counts
+
+        elif output == "projection":
+            return tri_cumu
+
     def paid_model(self, model, output="ultimates"):
         """ Apply a paid model and return ultimates or data """
         # Weighted predictions
         proj_paid_detail = model.predict(self.X())
 
+        # Apply weights
         proj_paid_detail = proj_paid_detail.multiply(pd.Series(self.w()), axis=0)
 
+        # Apply dates
         proj_paid_detail["origin_date"] = self.origin.values
 
         proj_paid = proj_paid_detail.groupby(["origin_date"]).apply(
@@ -244,12 +280,15 @@ class Dataset:
 
         ppci_mean = ppci.agg("mean")
 
+        if output == "selections":
+            return ppci_mean
+
         # Projection
-        proj_paid = pd.concat(
+        ultimate_dupe = pd.concat(
             [ultimate_counts for x in range(0, ppci_mean.shape[0])], axis=1
         )
-        proj_paid.columns = tri_incr.columns
-        proj_paid.multiply(ppci_mean, axis=1)
+        ultimate_dupe.columns = tri_incr.columns
+        proj_paid = ultimate_dupe.multiply(ppci_mean, axis=1)
 
         tri_incr[tri_incr.isna()] = proj_paid[tri_incr.isna()]
 
@@ -263,6 +302,25 @@ class Dataset:
 
         elif output == "projection":
             return tri_cumu
+
+    def payments_per_claim_model(self, model):
+        """ Calculates average payments per claim for a given PUNPPCI model
+        Parameters
+        ----------
+        model: PUNPPCILossEstimator or PUNPPCILossOptimizer
+
+        Note: this does not apply exposure weights at this time, but this is
+        likely to change in the future
+        """
+        pred = model.predict(self.X())
+        freq = pred[self.claim_count.columns.tolist()].sum(axis=1)
+
+        ppci = (
+            pred.apply(lambda x: x / freq)
+            .loc[:, self.claim_paid.columns.tolist()]
+            .agg("mean")
+        )
+        return ppci
 
     def w(self):
         """ Return weights
