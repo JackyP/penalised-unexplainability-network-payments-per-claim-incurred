@@ -5,3 +5,4 @@ from .optimizer import *
 from .plot import *
 from .benchmark import *
 from .example import *
+from .pytorch import *

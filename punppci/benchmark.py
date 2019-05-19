@@ -6,7 +6,7 @@ from pandas.tseries.offsets import MonthEnd
 import matplotlib.pyplot as plt
 import re
 from .dataset import Dataset
-from .model import PUNPPCILossEstimator
+from .pytorch import PUNPPCIClaimRegressor
 import gc
 
 
@@ -72,9 +72,16 @@ def benchmark(ds, model, ds_true):
         columns=true_paid.columns,
     )
 
+    true_paid["model"] = "True"
+    ppci_paid["model"] = "PPCI"
+    model_paid["model"] = "Model"
+
     # print(mse_ppci)
     # print(mse_model)
-    return pd.concat([count_loss, paid_loss], axis=1)
+    return (
+        pd.concat([count_loss, paid_loss], axis=1),
+        pd.concat([true_paid, ppci_paid, model_paid], axis=0),
+    )
 
 
 def actual_vs_model(ds_true, model, factor, output="cost", num_bands=20):
@@ -82,7 +89,7 @@ def actual_vs_model(ds_true, model, factor, output="cost", num_bands=20):
     Parameters:
     -----------
     ds_true: punppci.Dataset
-    model: punppci.PUNPPCILossEstimator or PUNPPCILossOptimizer model
+    model: punppci. or PUNPPCILossOptimizer model
     factor: Name of a feature
     output: "frequency" or "size"
     no_bands: Number of bands
@@ -199,7 +206,7 @@ def plot_actual_vs_model(ds_true, model, factor, num_bands=20):
     Parameters:
     -----------
     ds_true: punppci.Dataset
-    model: punppci.PUNPPCILossEstimator or PUNPPCILossOptimizer model
+    model: punppci. or PUNPPCILossOptimizer model
     factor: Name of a feature
     num_bands: number of bands
     """
@@ -233,6 +240,7 @@ def plot_actual_vs_model(ds_true, model, factor, num_bands=20):
 
 def benchmark_tester(
     df,
+    Model,
     n,
     v=0,
     features=None,
@@ -260,7 +268,10 @@ def benchmark_tester(
         exposure_df = df[exposure]
 
     # Dataset
-    ds = Dataset(
+    # A smarter normalisation without data leakage is preferable, but this is sufficient
+    # for v1
+
+    ds_orig = Dataset(
         features=df[features],
         origin=df[origin],
         exposure=exposure_df,
@@ -268,43 +279,67 @@ def benchmark_tester(
         claim_paid=df[claim_paid],
     )
 
+    avg_count = ds_orig.chain_ladder_count(output="ultimates").sum() / ds_orig.w().sum()
+    avg_paid = ds_orig.ppci(output="ultimates").sum() / ds_orig.w().sum()
+
+    print(avg_count, avg_paid)
+
+    ds = Dataset(
+        features=df[features],
+        origin=df[origin],
+        exposure=exposure_df,
+        claim_count=df[claim_count].divide(avg_count),
+        claim_paid=df[claim_paid].divide(avg_paid),
+    )
+
     ds_true = Dataset(
         features=df_full[features],
         origin=df_full[origin],
         exposure=exposure_df,
-        claim_count=df_full[claim_count],
-        claim_paid=df_full[claim_paid],
+        claim_count=df_full[claim_count].divide(avg_count),
+        claim_paid=df_full[claim_paid].divide(avg_paid),
     )
 
     # Model - Make, Fit and Predict
-    model = PUNPPCILossEstimator(dataset=ds)
-    model.fit(ds.X(), ds.y(), w=ds.w(), verbose=0)
+    # model = PUNPPCILossEstimator(dataset=ds)
+    # model.fit(ds.X(), ds.y(), w=ds.w(), verbose=0, batch_size=ds.X().shape[0])
+
+    model = Model(
+        feature_dimension=29,
+        output_dimension=df[claim_count].shape[1],
+        claim_count_names=claim_count,
+        claim_paid_names=claim_paid,
+    )
+
+    model.fit(ds.X(), ds.y())
 
     # Explained vs Unexplained factors
-    lin_vs_res = model.linear_vs_residual()
+    # lin_vs_res = model.linear_vs_residual()
 
     ppci_acs = ds.ppci(output="selections").sum()
     model_acs = ds.payments_per_claim_model(model).sum()
 
-    mean_frequency = np.exp(model.claim_count_initializer)
-    model_frequency = model.predict(ds.X(), "frequency").mean()
+    # mean_frequency = np.exp(model.claim_count_initializer)
 
-    bench_mod_reserve = benchmark(ds, model, ds_true)
+    # model_frequency = model.predict(ds.X(), "frequency").mean()
+
+    bench_mod_reserve, paid = benchmark(ds, model, ds_true)
     bench_mod_price = actual_vs_model_predicted_cost(ds_true, model)
 
     print("------------------------------------------------------------------")
     print("For test case #{} with n={}".format(v, n))
     print("PPCI Average Claim Size: {} vs Model: {}".format(ppci_acs, model_acs))
-    print("Average frequency: {} vs Model: {}".format(mean_frequency, model_frequency))
+    # print("Average frequency: {} vs Model: {}".format(mean_frequency, model_frequency))
     print("Linear vs residual of:")
-    print(lin_vs_res)
+    # print(lin_vs_res)
     print("PPCI vs Model Errors of:")
     print(bench_mod_reserve)
     print("Loss Prediction Comparison:")
     print(bench_mod_price)
 
-    weights = model.get_weights()
+    # weights = model.get_weights()
     # Bias check
+    """
     print("Bias check:")
     print(
         "Ultimate Count:",
@@ -320,13 +355,13 @@ def benchmark_tester(
         weights["develop_count_residual_output_claim_count/bias:0"],
         weights["develop_count_linear_output_claim_count/bias:0"],
     )
-
+    """
     # Output Counts - to CSV
     if export_csv:
         bench_mod_reserve.to_csv(f"output/{prefix}_benchmark_loss_reserve_results.csv")
         bench_mod_price.to_csv(f"output/{prefix}_benchmark_loss_price_results.csv")
 
-        lin_vs_res.to_csv(f"output/{prefix}_linear_vs_residual.csv")
+        # lin_vs_res.to_csv(f"output/{prefix}_linear_vs_residual.csv")
 
         ds.chain_ladder_count(output="projection").to_csv(
             f"output/{prefix}_count_ppci.csv"
@@ -348,17 +383,18 @@ def benchmark_tester(
         ).agg("sum").cumsum(axis=1).to_csv(f"output/{prefix}_paid_true.csv")
 
     # Attach data
-    lin_vs_res = lin_vs_res.assign(n=n, v=v)
+    # lin_vs_res = lin_vs_res.assign(n=n, v=v)
     bench_mod_reserve = bench_mod_reserve.assign(n=n, v=v)
     bench_mod_price = bench_mod_price.assign(n=n, v=v)
-
+    paid = paid.assign(n=n, v=v)
     gc.collect()
 
-    return model, lin_vs_res, bench_mod_reserve, bench_mod_price
+    return model, paid, bench_mod_reserve, bench_mod_price
 
 
 def benchmark_test_suite(
     df,
+    Model,
     n_list=[
         5000,
         5000,
@@ -376,10 +412,14 @@ def benchmark_test_suite(
         25000,
         25000,
         50000,
+        50000,
+        50000,
+        50000,
+        50000,
         100000,
         200000,
     ],  #
-    v_list=[1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 1, 1, 1],  #
+    v_list=[1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 1, 1],  #
     features=None,
     origin=None,
     exposure=None,
@@ -395,6 +435,7 @@ def benchmark_test_suite(
     results = [
         benchmark_tester(
             df,
+            Model,
             n,
             v,
             features=features,
@@ -409,8 +450,8 @@ def benchmark_test_suite(
     ]
 
     models = [a for a, b, c, d in results]
-    lin_vs_res = pd.concat([b for a, b, c, d in results])
+    paid = pd.concat([b for a, b, c, d in results])
     bench_mod_reserve = pd.concat([c for a, b, c, d in results])
     bench_mod_price = pd.concat([d for a, b, c, d in results])
 
-    return models, lin_vs_res, bench_mod_reserve, bench_mod_price
+    return models, paid, bench_mod_reserve, bench_mod_price

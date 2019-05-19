@@ -330,9 +330,15 @@ class Dataset:
     def X(self):
         """ X for scikit-learn estimators
         """
-        return self.preprocess.transform(self.features)
+        return pd.concat(
+            [pd.DataFrame(self.origin.astype(int)), pd.get_dummies(self.features)],
+            axis=1,
+        ).values.astype(np.float32)
+        # return self.preprocess.transform(self.features)
 
     def y(self):
         """ y for scikit-learn estimators
         """
-        return pd.concat([self.claim_count, self.claim_paid], axis=1).values
+        return pd.concat([self.claim_count, self.claim_paid], axis=1).values.astype(
+            np.float32
+        )

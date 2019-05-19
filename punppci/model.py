@@ -875,7 +875,7 @@ class PUNPPCILossEstimator(BaseEstimator):
 
         x_dict = self.x_dict(X, None, len(self.claim_count_names))
 
-        predictions = intermediate_model.predict(x_dict, batch_size=1)
+        predictions = intermediate_model.predict(x_dict)
 
         return {n: p for n, p in zip(output_names_ordered, predictions)}
 
