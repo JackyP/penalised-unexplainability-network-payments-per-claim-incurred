@@ -18,7 +18,7 @@ import gc
 #  - Documentation
 #  - Framework
 #  - y normalisation
-EPSILON=0.00001
+EPSILON = 0.00001
 
 
 class PUNPPCIClaimModule(nn.Module):
@@ -31,8 +31,7 @@ class PUNPPCIClaimModule(nn.Module):
         # l1_l2_lin_pricing=0.001,
         # l1_l2_res_pricing=0.001,
         # dense_layers_pricing=3,
-        layer_size=100
-
+        layer_size=100,
     ):
         super(PUNPPCIClaimModule, self).__init__()
 
@@ -82,7 +81,7 @@ class PUNPPCIClaimModule(nn.Module):
             # print(y_mean)
 
             freq_mean = y_mean[0:output_dim] + EPSILON
-            paid_mean = y_mean[output_dim:2*output_dim] + EPSILON
+            paid_mean = y_mean[output_dim : 2 * output_dim] + EPSILON
 
             self.count_spread.data = torch.Tensor(np.log(freq_mean))
 
@@ -93,7 +92,6 @@ class PUNPPCIClaimModule(nn.Module):
 
             # self.paid_linear_0.bias = nn.Parameter(torch.from_numpy(np.array(np.log(paid_mean).sum())))
             # self.paid_residual_0.bias = nn.Parameter(torch.from_numpy(np.array(np.log(paid_mean).sum())))
-
 
     def forward(self, X, **kwargs):
 
@@ -126,11 +124,11 @@ class PUNPPCIClaimModule(nn.Module):
         count_sr = self.count_residual_spread(Xr)
         paid_sr = self.paid_residual_spread(Xr)
 
-        count_dev_residual = (
-            wc * torch.exp(count_linear + count_residual + F.log_softmax(count_s + count_sr))
+        count_dev_residual = wc * torch.exp(
+            count_linear + count_residual + F.log_softmax(count_s + count_sr)
         )
-        paid_dev_residual = (
-            wp * torch.exp(paid_linear + paid_residual + F.log_softmax(paid_s + paid_sr))
+        paid_dev_residual = wp * torch.exp(
+            paid_linear + paid_residual + F.log_softmax(paid_s + paid_sr)
         )
 
         # Blended
@@ -141,11 +139,14 @@ class PUNPPCIClaimModule(nn.Module):
             1 + torch.exp(self.paid_blend_w)
         )
 
-        count_dev_blended = count_dev_residual * count_blend_weight + \
-            count_dev_linear * (1 - count_blend_weight)
+        count_dev_blended = (
+            count_dev_residual * count_blend_weight
+            + count_dev_linear * (1 - count_blend_weight)
+        )
 
-        paid_dev_blended = paid_dev_residual * paid_blend_weight + \
-            paid_dev_linear * (1 - paid_blend_weight)
+        paid_dev_blended = paid_dev_residual * paid_blend_weight + paid_dev_linear * (
+            1 - paid_blend_weight
+        )
 
         return torch.cat(
             [
@@ -357,7 +358,7 @@ class PUNPPCIClaimRegressor(BaseEstimator, NeuralNetRegressor):
                     feature_dim=self.feature_dimension,
                     output_dim=self.output_dimension,
                     y_mean=y_mean,
-                    layer_size=self.layer_size
+                    layer_size=self.layer_size,
                 ),
                 *args,
                 **kwargs,
@@ -366,33 +367,17 @@ class PUNPPCIClaimRegressor(BaseEstimator, NeuralNetRegressor):
                 optimizer=self.optimizer,
                 # optimizer__momentum=self.momentum,
                 optimizer__param_groups=[
-                    ("non_lin_*", {"weight_decay": self.l2_residual}),
-                    ("count_linear", {"weight_decay": self.l1_l2_linear}),
-                    ("paid_linear", {"weight_decay": self.l1_l2_linear}),
-                    (
-                        "count_linear.bias",
-                        {"weight_decay": self.l2_bias},
-                    ),
-                    (
-                        "paid_linear.bias",
-                        {"weight_decay": self.l2_bias},
-                    ),
-                    (
-                        "count_residual.bias",
-                        {"weight_decay": self.l2_bias},
-                    ),
-                    (
-                        "paid_residual.bias",
-                        {"weight_decay": self.l2_bias},
-                    ),
-
+                    ("dense_pricing*", {"weight_decay": self.l2_residual}),
+                    ("count_linear_0.weight", {"weight_decay": self.l1_l2_linear}),
+                    ("paid_linear_0.weight", {"weight_decay": self.l1_l2_linear}),
+                    ("count_linear_0.bias", {"weight_decay": self.l2_bias}),
+                    ("paid_linear_0.bias", {"weight_decay": self.l2_bias}),
+                    ("count_residual_0.bias", {"weight_decay": self.l2_bias}),
+                    ("paid_residual_0.bias", {"weight_decay": self.l2_bias}),
                 ],
                 batch_size=batch_size,
                 criterion=nn.MSELoss,
-                callbacks=[
-                    gradclip,
-                    earlystop,
-                ],
+                callbacks=[gradclip, earlystop],
                 verbose=0
             )
 
@@ -400,30 +385,34 @@ class PUNPPCIClaimRegressor(BaseEstimator, NeuralNetRegressor):
 
             super(PUNPPCIClaimRegressor, self).fit(X, y)
 
-            if not np.isnan(self.history[-1]['valid_loss']):
+            if not np.isnan(self.history[-1]["valid_loss"]):
                 self.lr_min = self.lr_range[-1]
                 self.lr_max = lr
                 break
 
         # Still broke?
-        if np.isnan(self.history[-1]['valid_loss']):
-            warn("This model may fail to converge on the data. Please review data and parameters.")
+        if np.isnan(self.history[-1]["valid_loss"]):
+            warn(
+                "This model may fail to converge on the data. Please review data and parameters."
+            )
             self.lr_min = self.lr_range[-1]
             self.lr_max = 0.001
 
         print("Setting maximum learn rate to {}.".format(self.lr_max))
 
         # Step 2: Cyclic LR with expected epoch count...
-        valid_losses = [x['valid_loss'] for x in self.history]
+        valid_losses = [x["valid_loss"] for x in self.history]
         expected_epoch_count = valid_losses.index(min(valid_losses)) + 1
-        expected_epoch_count = int(np.ceil(expected_epoch_count/2) * 2)
+        expected_epoch_count = int(np.ceil(expected_epoch_count / 2) * 2)
 
         print("Setting epochs for training model to {}".format(expected_epoch_count))
-        cyclic_lr = LRScheduler(policy=CyclicLR,
-                       base_lr=self.lr_min,
-                       max_lr=self.lr_max,
-                       step_size_up=expected_epoch_count/2,
-                       step_size_down=expected_epoch_count/2)
+        cyclic_lr = LRScheduler(
+            policy=CyclicLR,
+            base_lr=self.lr_min,
+            max_lr=self.lr_max,
+            step_size_up=expected_epoch_count / 2,
+            step_size_down=expected_epoch_count / 2,
+        )
 
         # ... but still keep training for as many epochs as required.
 
@@ -432,32 +421,20 @@ class PUNPPCIClaimRegressor(BaseEstimator, NeuralNetRegressor):
                 feature_dim=self.feature_dimension,
                 output_dim=self.output_dimension,
                 y_mean=y_mean,
-                layer_size=self.layer_size
+                layer_size=self.layer_size,
             ),
             max_epochs=expected_epoch_count,
             lr=self.lr_min,
             optimizer=self.optimizer,
             # optimizer__momentum=self.momentum,
             optimizer__param_groups=[
-                ("non_lin_*", {"weight_decay": self.l2_residual}),
-                ("count_linear", {"weight_decay": self.l1_l2_linear}),
-                ("paid_linear", {"weight_decay": self.l1_l2_linear}),
-                (
-                    "count_linear.bias",
-                    {"weight_decay": self.l2_bias},
-                ),
-                (
-                    "paid_linear.bias",
-                    {"weight_decay": self.l2_bias},
-                ),
-                (
-                    "count_residual.bias",
-                    {"weight_decay": self.l2_bias},
-                ),
-                (
-                    "paid_residual.bias",
-                    {"weight_decay": self.l2_bias},
-                )
+                ("dense_pricing*", {"weight_decay": self.l2_residual}),
+                ("count_linear_0.weight", {"weight_decay": self.l1_l2_linear}),
+                ("paid_linear_0.weight", {"weight_decay": self.l1_l2_linear}),
+                ("count_linear_0.bias", {"weight_decay": self.l2_bias}),
+                ("paid_linear_0.bias", {"weight_decay": self.l2_bias}),
+                ("count_residual_0.bias", {"weight_decay": self.l2_bias}),
+                ("paid_residual_0.bias", {"weight_decay": self.l2_bias}),
             ],
             batch_size=batch_size,
             criterion=nn.MSELoss,
@@ -481,14 +458,18 @@ class PUNPPCIClaimRegressor(BaseEstimator, NeuralNetRegressor):
         """ Adds l1 regularization to the loss """
         loss = super().get_loss(y_pred, y_true, X=X, training=training)
         param_list = ["count_linear_0.data", "paid_linear_0.data"]
-        loss += self.l1_l2_linear * sum([w.abs().sum() for p, w in self.module_.named_parameters() if p in param_list])
+        loss += self.l1_l2_linear * sum(
+            [
+                w.abs().sum()
+                for p, w in self.module_.named_parameters()
+                if p in param_list
+            ]
+        )
         return loss
-
 
     def get_weights(self):
         """ Returns weights as a dictionary """
         return {p: v for p, v in self.module.named_parameters()}
-
 
     def plot_pdp_1d(self, dataset, feature, response):
         """ Explains response vs feature """
@@ -543,21 +524,22 @@ class PUNPPCIClaimRegressor(BaseEstimator, NeuralNetRegressor):
         """ Explains severity vs feature"""
         return self.plot_pdp_1d(dataset, feature, "size")
 
-
     def predict(self, X, response_variable=None, w=None):
         X = (X - self.X_mean) / self.X_std
 
         if w is None:
             w = np.ones([X.shape[0], self.output_dimension * 2], np.float32)
         else:
-            w = w.astype(np.float32) * np.ones([X.shape[0], self.output_dimension * 2], np.float32)
+            w = w.astype(np.float32) * np.ones(
+                [X.shape[0], self.output_dimension * 2], np.float32
+            )
 
         X = np.hstack([X, w]).astype(np.float32)
 
         pred = super(PUNPPCIClaimRegressor, self).predict(X)
 
         pred_df = pd.DataFrame(
-            pred[:, 0:self.output_dimension * 2],
+            pred[:, 0 : self.output_dimension * 2],
             columns=self.claim_count_names + self.claim_paid_names,
         )
 
@@ -565,7 +547,9 @@ class PUNPPCIClaimRegressor(BaseEstimator, NeuralNetRegressor):
         if response_variable == "frequency":
             return pred_df[self.claim_count_names].sum(axis=0)
         elif response_variable == "size":
-            return pred_df[self.claim_paid_names].sum(axis=0) / pred_df[self.claim_count_names].sum(axis=0)
+            return pred_df[self.claim_paid_names].sum(axis=0) / pred_df[
+                self.claim_count_names
+            ].sum(axis=0)
         else:
             return pred_df
 
@@ -587,7 +571,10 @@ class PUNPPCIClaimRegressor(BaseEstimator, NeuralNetRegressor):
         pred = super(PUNPPCIClaimRegressor, self).predict(X)
         y_fill_na = np.where(np.isnan(y), 0.0, y)
 
-        loss = ((pred[:, 0:(self.output_dimension * 2)] - np.where(np.isnan(y), 0.0, y)) ** 2).mean()
+        loss = (
+            (pred[:, 0 : (self.output_dimension * 2)] - np.where(np.isnan(y), 0.0, y))
+            ** 2
+        ).mean()
 
         if np.isnan(loss):
             loss = np.finfo(np.float32).max
@@ -595,9 +582,6 @@ class PUNPPCIClaimRegressor(BaseEstimator, NeuralNetRegressor):
         print("Score: Loss = {}".format(loss))
         gc.collect()
         return -loss
-
-
-
 
 
 class PUNPPCIClaimOptimizer(BayesSearchCV):
@@ -623,7 +607,8 @@ class PUNPPCIClaimOptimizer(BayesSearchCV):
                 claim_count_names=claim_count_names,
                 claim_paid_names=claim_paid_names,
                 feature_dimension=feature_dimension,
-                output_dimension=output_dimension),
+                output_dimension=output_dimension,
+            ),
             search_spaces=search_spaces,
             cv=cv,
             n_iter=n_iter,
