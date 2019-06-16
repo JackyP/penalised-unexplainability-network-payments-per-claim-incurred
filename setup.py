@@ -8,7 +8,7 @@ with open("requirements.txt") as f:
 
 setuptools.setup(
     name="punppci",
-    version="0.0.2",
+    version="0.0.5",
     author="Jacky Poon",
     author_email="jackypn@gmail.com",
     description="Neural network for insurance claims modelling",

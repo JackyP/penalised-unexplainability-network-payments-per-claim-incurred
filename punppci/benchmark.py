@@ -1,36 +1,11 @@
 import pandas as pd
 import numpy as np
-import datetime
-from dateutil.relativedelta import relativedelta
-from pandas.tseries.offsets import MonthEnd
 import matplotlib.pyplot as plt
-import re
-from .dataset import Dataset
-from .model import PUNPPCILossEstimator
+from .dataset import InsuranceDataset
 import gc
 
 
-def data_as_at(df, origin_date, as_at_date, column_prefix, periods="months"):
-    """ Censors a dataset into a triangle.
-    """
-    df = df.copy()
-    for col in df.columns.tolist():
-        if col.startswith(column_prefix):
-            periods_to_null = int(re.search(r"\d+$", col).group())
-
-            if periods == "months":
-                max_date = as_at_date + relativedelta(months=-periods_to_null)
-            elif periods == "days":
-                max_date = as_at_date + datetime.timedelta(days=-periods_to_null)
-            elif periods == "years":
-                max_date = as_at_date + datetime.timedelta(years=-periods_to_null)
-
-            df.loc[df[origin_date] > max_date, col] = np.nan
-
-    return df
-
-
-def benchmark(ds, model, ds_true):
+def benchmark(ds, ds_true, model0, model1):
     """ Benchmark one model against another """
     # Get true count triangle
     true_count = (
@@ -39,17 +14,31 @@ def benchmark(ds, model, ds_true):
         .agg("sum")
         .cumsum(axis=1)
     )
-    chain_ladder_count = ds.chain_ladder_count(output="projection")
-    model_count = ds.count_model(model, output="projection")
+    model1_count = (
+        ds.project_claim_count(model1)
+        .assign(origin_date=ds_true.origin)
+        .groupby(["origin_date"])
+        .agg("sum")
+        .cumsum(axis=1)
+    )
+    model0_count = (
+        ds.project_claim_count(model0)
+        .assign(origin_date=ds_true.origin)
+        .groupby(["origin_date"])
+        .agg("sum")
+        .cumsum(axis=1)
+    )
 
-    mse_chain_ladder_count = (
-        (chain_ladder_count.values - true_count.values) ** 2
-    ).mean(axis=0)
-    mse_model_count = ((model_count.values - true_count.values) ** 2).mean(axis=0)
+    mse_model1_count = ((model1_count.to_numpy() - true_count.to_numpy()) ** 2).mean(
+        axis=0
+    )
+    mse_model0_count = ((model0_count.to_numpy() - true_count.to_numpy()) ** 2).mean(
+        axis=0
+    )
 
     count_loss = pd.DataFrame(
-        np.vstack([mse_chain_ladder_count, mse_model_count]),
-        index=["PPCI", "Model"],
+        np.vstack([mse_model0_count, mse_model1_count]),
+        index=[type(model0).__name__, type(model1).__name__],
         columns=true_count.columns,
     )
 
@@ -60,21 +49,41 @@ def benchmark(ds, model, ds_true):
         .agg("sum")
         .cumsum(axis=1)
     )
-    ppci_paid = ds.ppci(output="projection")
-    model_paid = ds.paid_model(model, output="projection")
 
-    mse_ppci = ((ppci_paid.values - true_paid.values) ** 2).mean(axis=0)
-    mse_model = ((model_paid.values - true_paid.values) ** 2).mean(axis=0)
+    model1_paid = (
+        ds.project_claim_paid(model1)
+        .assign(origin_date=ds_true.origin)
+        .groupby(["origin_date"])
+        .agg("sum")
+        .cumsum(axis=1)
+    )
+    model0_paid = (
+        ds.project_claim_paid(model0)
+        .assign(origin_date=ds_true.origin)
+        .groupby(["origin_date"])
+        .agg("sum")
+        .cumsum(axis=1)
+    )
+
+    mse_model0 = ((model0_paid.to_numpy() - true_paid.to_numpy()) ** 2).mean(axis=0)
+    mse_model1 = ((model1_paid.to_numpy() - true_paid.to_numpy()) ** 2).mean(axis=0)
 
     paid_loss = pd.DataFrame(
-        np.vstack([mse_ppci, mse_model]),
-        index=["PPCI", "Model"],
+        np.vstack([mse_model0, mse_model1]),
+        index=[type(model0).__name__, type(model1).__name__],
         columns=true_paid.columns,
     )
 
+    true_paid["model"] = "True"
+    model0_paid["model"] = type(model0).__name__
+    model1_paid["model"] = type(model1).__name__
+
     # print(mse_ppci)
     # print(mse_model)
-    return pd.concat([count_loss, paid_loss], axis=1)
+    return (
+        pd.concat([count_loss, paid_loss], axis=1),
+        pd.concat([true_paid, model0_paid, model1_paid], axis=0),
+    )
 
 
 def actual_vs_model(ds_true, model, factor, output="cost", num_bands=20):
@@ -82,7 +91,7 @@ def actual_vs_model(ds_true, model, factor, output="cost", num_bands=20):
     Parameters:
     -----------
     ds_true: punppci.Dataset
-    model: punppci.PUNPPCILossEstimator or PUNPPCILossOptimizer model
+    model: punppci. or PUNPPCILossOptimizer model
     factor: Name of a feature
     output: "frequency" or "size"
     no_bands: Number of bands
@@ -90,32 +99,46 @@ def actual_vs_model(ds_true, model, factor, output="cost", num_bands=20):
     if output == "frequency":
         # Actual vs Model Claim Count, Weights = Weights
         actual = ds_true.claim_count.reset_index(drop=True)
-        weights_model = ds_true.w()
-        weights_actual = ds_true.w()
+        weights_model = ds_true.w(model)
+        weights_actual = ds_true.w(model)
+
+        pred = (
+            ds_true.project_claim_count(model, future_only=False)
+            .sum(axis=1)
+            .reset_index(drop=True)
+        )
 
     elif output == "size":
         # Actual vs Model Claim Size, Weights = Claim Counts
         actual = ds_true.claim_paid.reset_index(drop=True)
-        freq_cols = ds_true.claim_count.columns.tolist()
-        weights_model = model.predict(ds_true.X())[freq_cols].sum(axis=1)
+        weights_model = (
+            ds_true.project_claim_count(model, future_only=False)
+            .sum(axis=1)
+            .reset_index(drop=True)
+        )
+
         weights_actual = ds_true.claim_count.reset_index(drop=True).sum(axis=1)
+
+        pred = (
+            ds_true.project_claim_paid(model, future_only=False)
+            .sum(axis=1)
+            .reset_index(drop=True)
+        )
     elif output == "cost":
         # Actual vs Model Claim Paid, Weights = Claim Counts
         actual = ds_true.claim_paid.reset_index(drop=True)
-        weights_model = ds_true.w()
-        weights_actual = ds_true.w()
+        weights_model = ds_true.w(model)
+        weights_actual = ds_true.w(model)
+
+        pred = (
+            ds_true.project_claim_paid(model, future_only=False)
+            .sum(axis=1)
+            .reset_index(drop=True)
+        )
     else:
         raise Exception("Please either have output = 'frequency', 'size' or 'paid'.")
 
     # Do we need to bin
-    cols = actual.columns.tolist()
-
-    pred = (
-        model.predict(ds_true.X())[cols]
-        .sum(axis=1)
-        .multiply(pd.Series(ds_true.w()), axis=0)
-    )
-
     factor_s = ds_true.features[factor].reset_index(drop=True)
 
     if (
@@ -155,15 +178,13 @@ def actual_vs_model_predicted_cost(ds_true, model, num_bands=20):
     """ Plot actual vs model by predicted_cost """
     # Actual vs Model Claim Paid, Weights = Claim Counts
     actual = ds_true.claim_paid.reset_index(drop=True)
-    weights_model = ds_true.w()
-    weights_actual = ds_true.w()
-
-    cols = actual.columns.tolist()
+    weights_model = ds_true.w(model)
+    weights_actual = ds_true.w(model)
 
     pred = (
-        model.predict(ds_true.X())[cols]
+        ds_true.project_claim_paid(model, future_only=False)
         .sum(axis=1)
-        .multiply(pd.Series(ds_true.w()), axis=0)
+        .reset_index(drop=True)
     )
 
     factor_s = pred
@@ -199,7 +220,7 @@ def plot_actual_vs_model(ds_true, model, factor, num_bands=20):
     Parameters:
     -----------
     ds_true: punppci.Dataset
-    model: punppci.PUNPPCILossEstimator or PUNPPCILossOptimizer model
+    model: punppci. or PUNPPCILossOptimizer model
     factor: Name of a feature
     num_bands: number of bands
     """
@@ -233,6 +254,8 @@ def plot_actual_vs_model(ds_true, model, factor, num_bands=20):
 
 def benchmark_tester(
     df,
+    Model0,
+    Model1,
     n,
     v=0,
     features=None,
@@ -245,14 +268,10 @@ def benchmark_tester(
     export_csv=False,
 ):
     """ PUNPPCI - does it work?
-
-
     """
-    prefix = f"{n}_test{v}_"
 
-    df_full = df.sample(n=n, random_state=v)
-
-    df = data_as_at(df_full, origin, as_at, claim_prefix)
+    if n > 0:
+        df = df.sample(n=n, random_state=v)
 
     if exposure is None:
         exposure_df = None
@@ -260,105 +279,59 @@ def benchmark_tester(
         exposure_df = df[exposure]
 
     # Dataset
-    ds = Dataset(
+    ds = InsuranceDataset(
         features=df[features],
         origin=df[origin],
         exposure=exposure_df,
         claim_count=df[claim_count],
         claim_paid=df[claim_paid],
+        as_at_date=as_at,
     )
 
-    ds_true = Dataset(
-        features=df_full[features],
-        origin=df_full[origin],
+    ds_true = InsuranceDataset(
+        features=df[features],
+        origin=df[origin],
         exposure=exposure_df,
-        claim_count=df_full[claim_count],
-        claim_paid=df_full[claim_paid],
+        claim_count=df[claim_count],
+        claim_paid=df[claim_paid],
+        as_at_date=None,
     )
 
     # Model - Make, Fit and Predict
-    model = PUNPPCILossEstimator(dataset=ds)
-    model.fit(ds.X(), ds.y(), w=ds.w(), verbose=0)
+
+    model0 = Model0()
+
+    model0.fit(ds.X(model0), ds.y(model0), w=ds.w(model0))
+
+    model1 = Model1()
+
+    model1.fit(ds.X(model1), ds.y(model1), w=ds.w(model1))
 
     # Explained vs Unexplained factors
-    lin_vs_res = model.linear_vs_residual()
-
-    ppci_acs = ds.ppci(output="selections").sum()
-    model_acs = ds.payments_per_claim_model(model).sum()
-
-    mean_frequency = np.exp(model.claim_count_initializer)
-    model_frequency = model.predict(ds.X(), "frequency").mean()
-
-    bench_mod_reserve = benchmark(ds, model, ds_true)
-    bench_mod_price = actual_vs_model_predicted_cost(ds_true, model)
+    bench_mod_reserve, paid = benchmark(ds, ds_true, model0, model1)
+    bench_mod_price = actual_vs_model_predicted_cost(ds_true, model0)
 
     print("------------------------------------------------------------------")
     print("For test case #{} with n={}".format(v, n))
-    print("PPCI Average Claim Size: {} vs Model: {}".format(ppci_acs, model_acs))
-    print("Average frequency: {} vs Model: {}".format(mean_frequency, model_frequency))
-    print("Linear vs residual of:")
-    print(lin_vs_res)
+
     print("PPCI vs Model Errors of:")
     print(bench_mod_reserve)
     print("Loss Prediction Comparison:")
     print(bench_mod_price)
 
-    weights = model.get_weights()
-    # Bias check
-    print("Bias check:")
-    print(
-        "Ultimate Count:",
-        np.exp(weights["risk_count_linear_output_ultimate_claim_count/bias:0"]),
-        np.exp(weights["risk_count_residual_output_ultimate_claim_count/bias:0"]),
-        "Ultimate Size:",
-        np.exp(weights["risk_size_linear_output_ultimate_claim_size/bias:0"]),
-        np.exp(weights["risk_size_residual_output_ultimate_claim_size/bias:0"]),
-        "Development Count:",
-        weights["develop_count_residual_output_claim_count/bias:0"],
-        weights["develop_count_linear_output_claim_count/bias:0"],
-        "Development Size:",
-        weights["develop_count_residual_output_claim_count/bias:0"],
-        weights["develop_count_linear_output_claim_count/bias:0"],
-    )
-
-    # Output Counts - to CSV
-    if export_csv:
-        bench_mod_reserve.to_csv(f"output/{prefix}_benchmark_loss_reserve_results.csv")
-        bench_mod_price.to_csv(f"output/{prefix}_benchmark_loss_price_results.csv")
-
-        lin_vs_res.to_csv(f"output/{prefix}_linear_vs_residual.csv")
-
-        ds.chain_ladder_count(output="projection").to_csv(
-            f"output/{prefix}_count_ppci.csv"
-        )
-        ds.count_model(model, output="projection").to_csv(
-            f"output/{prefix}_count_model.csv"
-        )
-        ds_true.claim_count.assign(origin_date=ds_true.origin).groupby(
-            ["origin_date"]
-        ).agg("sum").cumsum(axis=1).to_csv(f"output/{prefix}_count_true.csv")
-
-        # Output Paid - to CSV
-        ds.ppci(output="projection").to_csv(f"output/{prefix}_paid_ppci.csv")
-        ds.paid_model(model, output="projection").to_csv(
-            f"output/{prefix}_paid_model.csv"
-        )
-        ds_true.claim_paid.assign(origin_date=ds_true.origin).groupby(
-            ["origin_date"]
-        ).agg("sum").cumsum(axis=1).to_csv(f"output/{prefix}_paid_true.csv")
-
     # Attach data
-    lin_vs_res = lin_vs_res.assign(n=n, v=v)
     bench_mod_reserve = bench_mod_reserve.assign(n=n, v=v)
     bench_mod_price = bench_mod_price.assign(n=n, v=v)
-
+    paid = paid.assign(n=n, v=v)
     gc.collect()
 
-    return model, lin_vs_res, bench_mod_reserve, bench_mod_price
+    return model0, model1, paid, bench_mod_reserve, bench_mod_price
 
 
 def benchmark_test_suite(
     df,
+    Model0,
+    Model1,
     n_list=[
         5000,
         5000,
@@ -376,10 +349,14 @@ def benchmark_test_suite(
         25000,
         25000,
         50000,
+        50000,
+        50000,
+        50000,
+        50000,
         100000,
         200000,
     ],  #
-    v_list=[1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 1, 1, 1],  #
+    v_list=[1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 1, 1],  #
     features=None,
     origin=None,
     exposure=None,
@@ -395,6 +372,8 @@ def benchmark_test_suite(
     results = [
         benchmark_tester(
             df,
+            Model0,
+            Model1,
             n,
             v,
             features=features,
@@ -408,9 +387,10 @@ def benchmark_test_suite(
         for n, v in zip(n_list, v_list)
     ]
 
-    models = [a for a, b, c, d in results]
-    lin_vs_res = pd.concat([b for a, b, c, d in results])
-    bench_mod_reserve = pd.concat([c for a, b, c, d in results])
-    bench_mod_price = pd.concat([d for a, b, c, d in results])
+    models0 = [a0 for a0, a1, b, c, d in results]
+    models1 = [a1 for a0, a1, b, c, d in results]
+    paid = pd.concat([b for a0, a1, b, c, d in results])
+    bench_mod_reserve = pd.concat([c for a0, a1, b, c, d in results])
+    bench_mod_price = pd.concat([d for a0, a1, b, c, d in results])
 
-    return models, lin_vs_res, bench_mod_reserve, bench_mod_price
+    return models0, models1, paid, bench_mod_reserve, bench_mod_price

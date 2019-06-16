@@ -1,9 +1,7 @@
 import pandas as pd
 import numpy as np
-import datetime
-from dateutil.relativedelta import relativedelta
+
 from pandas.tseries.offsets import MonthEnd
-import re
 
 
 def fetch_example_data(nrows=50000):
@@ -61,19 +59,3 @@ def fetch_example_data(nrows=50000):
     )
 
     return df
-
-
-if __name__ == "__main__":
-    # This code can be removed later
-    df = fetch_example_data()
-    df.groupby(["origin_date"]).agg("sum")
-
-    tri = (
-        data_as_at(df, df.origin_date.agg("max"), "claim_count")
-        .groupby(["origin_date"])
-        .agg("sum")
-    )
-
-    tri_only = tri.loc[:, tri.columns.str.startswith("claim_count")]
-
-    tri_only

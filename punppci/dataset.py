@@ -1,46 +1,25 @@
 import pandas as pd
 import numpy as np
-from sklearn.pipeline import make_pipeline
-from sklearn.compose import ColumnTransformer, make_column_transformer
-from sklearn import preprocessing
+from torch.utils.data import Dataset
 from .plot import plot_triangle
+from dateutil.relativedelta import relativedelta
+import datetime
+import re
 
-"""
-    Outstanding items:
-     - Dask
-     - Generator
-     - Types of models
-"""
+try:
+    import databricks.koalas as kl
+except ImportError:
+    print("Optionally, pip install koalas[spark] to use with pyspark.")
+    import pandas as kl
+
+    pass
 
 
-class Dataset:
-    """
-        Convenience class for data transformation for neural network models of
-        structured data
+# Convert Strings to Categories
 
-        Properties
-        ----------
-        features
-        origin
-        delay
 
-        exposure
-
-        claim_count
-        claim_paid
-
-        variate_names
-        variate_scaler
-
-        category_names
-        category_levels
-
-        Methods
-        -------
-        __init__(self, data, exposure_weight, delay, claim_count, cumulative_paid):
-
-        X
-        y
+class InsuranceDataset(Dataset):
+    """Insurance dataset for actuarial modelling.
 
 
     """
@@ -52,287 +31,259 @@ class Dataset:
         exposure=None,
         claim_count=None,
         claim_paid=None,
+        claim_incurred=None,
+        as_at_date=None,
+        period_type="months",
     ):
-        """ Create a dataset for actuarial modelling
-
-        Parameters:
+        """
+        Arguments:
         -----------
-        features: Pandas DataFrame
-        origin: Pandas Series
-        delay: Pandas Series
-        exposure: Pandas Series
-        claim_count: Pandas Dataframe
-        claim_paid: Pandas Dataframe
+            features: Koalas Dataframe or Pandas DataFrame
+            origin: Koalas Dataframe or Pandas Series
+            delay: Koalas Dataframe or Pandas Series
+            exposure: Koalas Dataframe or Pandas Series
+            claim_count: Koalas Dataframe or Pandas Dataframe
+            claim_paid: Koalas Dataframe or Pandas Dataframe
+            claim_incurred: Koalas Dataframe or Pandas Dataframe
+            as_at_date: Datetime
         """
 
-        # Data validation
-        try:
-            # Check each column
-            for col, col_type in zip(
-                [features, origin, exposure, claim_count, claim_paid],
-                [
-                    "features",
-                    "origin",
-                    "exposure",
-                ],  # don't null check "claim count", "claim paid"
-            ):
-                if col is not None:
-                    assert (
-                        # Check null values
-                        col.isnull().values.any()
-                        == 0
-                    ), "Dataframe contains null values! Please clean these values before creating the Dataset"
-                else:
-                    if col_type == "exposure":
-                        # Create dummy vector with same length as origin
-                        exposure = pd.DataFrame(
-                            1.0, index=np.arange(len(origin)), columns=["exposure"]
-                        )["exposure"]
-                    else:
-                        raise AssertionError(
-                            "Data for {} not optional!".format(col_type)
-                        )
-        except (AttributeError, TypeError):
-            raise AssertionError("Input data should be a Pandas DataFrame!")
-
-        # Convert Strings to Categories
-        def converter(x):
-            if x.dtype == "object":
-                return x.astype("category")
-            elif x.dtype == "int64":
-                return x.astype("float64")
-            else:
-                return x
-
-        features_convert = features.apply(converter)
-
-        features_convert["origin"] = origin.values.astype(float)
-
-        # Transformer - Features
-        categorical_features = features_convert.dtypes == "category"
-        origin_features = features_convert.columns == "origin"
-        numerical_features = ~(categorical_features | origin_features)
-
-        self.preprocess = make_column_transformer(
-            (preprocessing.MinMaxScaler(), origin_features),
-            (preprocessing.OrdinalEncoder(), categorical_features),
-            (preprocessing.StandardScaler(), numerical_features),
+        self.features = self.__process_init_frame__(features)
+        self.origin = self.__process_init_series__(origin)
+        self.exposure = self.__process_init_series__(exposure)
+        self.claim_count = self.__data_as_at__(
+            self.__process_init_frame__(claim_count),
+            self.origin,
+            as_at_date,
+            period_type,
         )
+        self.claim_paid = self.__data_as_at__(
+            self.__process_init_frame__(claim_paid),
+            self.origin,
+            as_at_date,
+            period_type,
+        )
+        self.claim_incurred = self.__data_as_at__(
+            self.__process_init_frame__(claim_incurred),
+            self.origin,
+            as_at_date,
+            period_type,
+        )
+        self.as_at_date = as_at_date
+        self.period_type = period_type
 
-        self.preprocess.fit(features_convert)
+    def __converter__(x):
+        if x.dtype == "object":
+            return x.astype("category")
+        elif x.dtype == "int64":
+            return x.astype("float32")
+        elif x.dtype == "float64":
+            return x.astype("float32")
+        else:
+            return x
 
-        # Transformer - Responses
+    def __data_as_at__(self, df, origin_date, as_at_date, period_type):
+        """ Censors a dataset into a triangle.
+        """
+        if df is None:
+            return None
 
-        # Store attributes
-        self.category_names = features_convert.columns[categorical_features].tolist()
-        self.variate_names = features_convert.columns[numerical_features].tolist()
+        df.fillna(0, inplace=True)
+        if as_at_date is not None:
+            for col in df.columns.tolist():
+                # if col.startswith(column_prefix):
+                periods_to_null = int(re.search(r"\d+$", col).group())
 
-        self.category_levels = [
-            features_convert[x].cat.categories.shape[0] for x in self.category_names
-        ]
+                if period_type == "months":
+                    max_date = as_at_date + relativedelta(months=-periods_to_null)
+                elif period_type == "days":
+                    max_date = as_at_date + datetime.timedelta(days=-periods_to_null)
+                elif period_type == "years":
+                    max_date = as_at_date + datetime.timedelta(years=-periods_to_null)
 
-        self.features = features_convert
-        self.feature_names = ["origin"] + self.category_names + self.variate_names
-        self.origin = origin
-        self.exposure = exposure
-        self.claim_count = claim_count
-        self.claim_paid = claim_paid
+                df.loc[origin_date > max_date, col] = np.nan
+        return df
 
-    def chain_ladder_count(self, output="ultimates"):
-        """ Estimate ultimate claim counts based on chain ladder """
-        # Claim numbers
-        tri = self.claim_count.copy()
-        tri["origin_date"] = self.origin
+    def __process_init_frame__(self, df):
+        """ Attempt to coerce to DataFrame
+        """
+        if df is None:
+            return None
+        elif isinstance(df, pd.DataFrame):
+            return df
+        elif isinstance(df, kl.DataFrame):
+            return df
+        else:
+            return pd.DataFrame(df)
 
-        # Incremental triangle
-        tri_incr = tri.groupby(["origin_date"]).apply(lambda g: g.sum(skipna=False))
+    def __process_init_series__(self, s):
+        """ Attempt to coerce to right format
+        """
+        if s is None:
+            return None
+        else:
+            return self.__process_init_frame__(s).iloc[:, 0]  # Currently same process
 
-        # Cumulative triangle
-        tri_cumu = tri_incr.cumsum(axis=1)
+    def __len__(self):
+        """ Pytorch - number of items """
+        return self.origin.count() + 0
 
-        # Chain Ladder Ratios
-        for i in range(0, tri_incr.shape[1] - 1):
-            isvalid = ~np.isnan(tri_cumu.iloc[:, i + 1])
-            chain_ladder_factor = tri_cumu.iloc[:, i + 1].loc[isvalid].agg(
-                "sum"
-            ) / tri_cumu.iloc[:, i].loc[isvalid].agg("sum")
+    def __getitem__(self, idx):
+        """ Pytorch - get item by index """
+        return "TODO"
 
-            # Apply development
-            tri_cumu.iloc[:, i + 1].loc[~isvalid] = (
-                tri_cumu.iloc[:, i].loc[~isvalid] * chain_ladder_factor
+    def project_claim_count(self, model, future_only=True):
+        """ Projects the claim count triangle """
+
+        X = self.X(model)
+        y = self.y(model)
+        w = self.w(model)
+
+        y_format = model.get_datasets_format()[1]
+        ind = y_format.index("claim_count")
+        veclen = len(self.claim_count.columns)
+
+        if w is None:
+            predict = model.predict(X, y)
+        else:
+            predict = model.predict(X, y, w=w)
+
+        if isinstance(self.claim_paid, pd.DataFrame):
+            predict = pd.DataFrame(
+                predict[:, ind * veclen : (ind + 1) * veclen],
+                index=self.claim_count.index,
+                columns=self.claim_count.columns,
             )
-            # print(chain_ladder_factor)
+        elif isinstance(self.claim_paid, kl.DataFrame):
+            predict = kl.DataFrame(
+                predict[:, ind * veclen : (ind + 1) * veclen],
+                index=self.claim_count.index,
+                columns=self.claim_count.columns,
+            )
 
-        # Ultimate
-        if output == "ultimates":
-            ultimate_counts = tri_cumu.iloc[:, -1]
-            return ultimate_counts
+        if future_only:
+            claim_count = self.claim_count.fillna(predict)
+        else:
+            claim_count = predict
 
-        elif output == "projection":
-            return tri_cumu
+        return claim_count
 
-    def count_model(self, model, output="ultimates"):
-        """ Apply a paid model and return ultimates or data """
-        # Weighted predictions
-        proj_paid_detail = model.predict(self.X())
-
-        # Apply weights
-        proj_paid_detail = proj_paid_detail.multiply(pd.Series(self.w()), axis=0)
-
-        # Apply dates
-        proj_paid_detail["origin_date"] = self.origin.values
-
-        proj_paid = proj_paid_detail.groupby(["origin_date"]).apply(
-            lambda g: g.sum(skipna=False)
-        )
-
-        # Fill
-        tri = self.claim_count.copy()
-        tri["origin_date"] = self.origin
-
-        # Incremental triangle
-        tri_incr = tri.groupby(["origin_date"]).apply(lambda g: g.sum(skipna=False))
-        tri_incr[tri_incr.isna()] = proj_paid[tri_incr.isna()]
-
-        # Cumulative triangle
-        tri_cumu = tri_incr.cumsum(axis=1)
-
-        # Ultimate
-        if output == "ultimates":
-            ultimate_counts = tri_cumu.iloc[:, -1]
-            return ultimate_counts
-
-        elif output == "projection":
-            return tri_cumu
-
-    def paid_model(self, model, output="ultimates"):
-        """ Apply a paid model and return ultimates or data """
-        # Weighted predictions
-        proj_paid_detail = model.predict(self.X())
-
-        # Apply weights
-        proj_paid_detail = proj_paid_detail.multiply(pd.Series(self.w()), axis=0)
-
-        # Apply dates
-        proj_paid_detail["origin_date"] = self.origin.values
-
-        proj_paid = proj_paid_detail.groupby(["origin_date"]).apply(
-            lambda g: g.sum(skipna=False)
-        )
-
-        # Fill
-        tri = self.claim_paid.copy()
-        tri["origin_date"] = self.origin
-
-        # Incremental triangle
-        tri_incr = tri.groupby(["origin_date"]).apply(lambda g: g.sum(skipna=False))
-        tri_incr[tri_incr.isna()] = proj_paid[tri_incr.isna()]
-
-        # Cumulative triangle
-        tri_cumu = tri_incr.cumsum(axis=1)
-
-        # Ultimate
-        if output == "ultimates":
-            ultimate_paids = tri_cumu.iloc[:, -1]
-            return ultimate_paids
-
-        elif output == "projection":
-            return tri_cumu
-
-    def plot_triangle_claim_count(self, mask_bottom=True):
+    def plot_triangle_claim_count(self, model=None):
         """ Plots the claim count triangle """
-        claim = self.claim_count.copy()
-        claim["origin_date"] = self.origin
+        if model is not None:
+            claim_count = self.project_claim_count(model)
+            mask_bottom = False
+        else:
+            claim_count = self.claim_count
+            mask_bottom = True
 
         return plot_triangle(
-            claim.groupby(["origin_date"]).agg("sum").cumsum(axis=1), mask_bottom
+            claim_count.assign(origin_date=self.origin)
+            .groupby(["origin_date"])
+            .agg("sum")
+            .cumsum(axis=1),
+            mask_bottom,
         )
 
-    def plot_triangle_claim_paid(self, mask_bottom=True):
+    def project_claim_paid(self, model, future_only=True):
+        """ Predict the claim paid triangle """
+
+        X = self.X(model)
+        y = self.y(model)
+        w = self.w(model)
+
+        y_format = model.get_datasets_format()[1]
+        ind = y_format.index("claim_paid")
+        veclen = len(self.claim_paid.columns)
+
+        if w is None:
+            predict = model.predict(X, y)
+        else:
+            predict = model.predict(X, y, w=w)
+
+        if isinstance(predict, pd.DataFrame):
+            predict = predict.iloc[:, ind * veclen : (ind + 1) * veclen]
+        elif isinstance(predict, kl.DataFrame):
+            predict = predict.iloc[:, ind * veclen : (ind + 1) * veclen]
+        elif isinstance(self.claim_paid, pd.DataFrame):
+            predict = pd.DataFrame(
+                predict[:, ind * veclen : (ind + 1) * veclen],
+                index=self.claim_paid.index,
+                columns=self.claim_paid.columns,
+            )
+        elif isinstance(self.claim_paid, kl.DataFrame):
+            predict = kl.DataFrame(
+                predict[:, ind * veclen : (ind + 1) * veclen],
+                index=self.claim_paid.index,
+                columns=self.claim_paid.columns,
+            )
+
+        if future_only:
+            claim_paid = self.claim_paid.fillna(predict)
+        else:
+            claim_paid = predict
+        return claim_paid
+
+    def plot_triangle_claim_paid(self, model=None):
         """ Plots the claim paid triangle """
-        claim = self.claim_paid.copy()
-        claim["origin_date"] = self.origin
+        if model is not None:
+            claim_paid = self.project_claim_paid(model)
+            mask_bottom = False
+        else:
+            claim_paid = self.claim_paid
+            mask_bottom = True
 
         return plot_triangle(
-            claim.groupby(["origin_date"]).agg("sum").cumsum(axis=1), mask_bottom
+            claim_paid.assign(origin_date=self.origin)
+            .groupby(["origin_date"])
+            .agg("sum")
+            .cumsum(axis=1),
+            mask_bottom,
         )
 
-    def plot_triangle_ppci(self, mask_bottom=False):
-        """ Plots the projected paid triangle using PPCI """
-        return plot_triangle(self.ppci(output="projection"), mask_bottom)
-
-    def plot_triangle_model(self, model, mask_bottom=False):
-        """ Plots the projected paid triangle using PUNPPCI """
-        return plot_triangle(self.paid_model(model, output="projection"), mask_bottom)
-
-    def ppci(self, output="ultimates"):
-        """ Payments per claim incurred """
-        tri = self.claim_paid.copy()
-        tri["origin_date"] = self.origin
-
-        # Incremental triangle
-        tri_incr = tri.groupby(["origin_date"]).apply(lambda g: g.sum(skipna=False))
-
-        # PPCI
-
-        ultimate_counts = self.chain_ladder_count()
-        ppci = tri_incr.div(ultimate_counts, axis=0)
-
-        ppci_mean = ppci.agg("mean")
-
-        if output == "selections":
-            return ppci_mean
-
-        # Projection
-        ultimate_dupe = pd.concat(
-            [ultimate_counts for x in range(0, ppci_mean.shape[0])], axis=1
-        )
-        ultimate_dupe.columns = tri_incr.columns
-        proj_paid = ultimate_dupe.multiply(ppci_mean, axis=1)
-
-        tri_incr[tri_incr.isna()] = proj_paid[tri_incr.isna()]
-
-        # Cumulative triangle
-        tri_cumu = tri_incr.cumsum(axis=1)
-
-        # Ultimate
-        if output == "ultimates":
-            ultimate_paids = tri_cumu.iloc[:, -1]
-            return ultimate_paids
-
-        elif output == "projection":
-            return tri_cumu
-
-    def payments_per_claim_model(self, model):
-        """ Calculates average payments per claim for a given PUNPPCI model
-        Parameters
-        ----------
-        model: PUNPPCILossEstimator or PUNPPCILossOptimizer
-
-        Note: this does not apply exposure weights at this time, but this is
-        likely to change in the future
+    def w(self, Model):
+        """ weights for scikit-learn estimators
         """
-        pred = model.predict(self.X())
-        freq = pred[self.claim_count.columns.tolist()].sum(axis=1)
+        if self.exposure is None:
+            return np.ones(self.claim_paid.shape[0]).reshape(-1, 1)
+        else:
+            return self.exposure
 
-        ppci = (
-            pred.apply(lambda x: x / freq)
-            .loc[:, self.claim_paid.columns.tolist()]
-            .agg("mean")
-        )
-        return ppci
-
-    def w(self):
-        """ Return weights
-        """
-        return self.exposure.values
-
-    def X(self):
+    def X(self, Model):
         """ X for scikit-learn estimators
         """
-        return self.preprocess.transform(self.features)
 
-    def y(self):
+        input_X_datasets, input_y_datasets, preprocess_X, preprocess_y = (
+            Model.get_datasets_format()
+        )
+
+        datasets = [getattr(self, dataset_name) for dataset_name in input_X_datasets]
+
+        if isinstance(datasets[0], pd.DataFrame) or isinstance(datasets[0], pd.Series):
+            df = pd.concat(datasets, axis=1)
+        else:
+            df = kl.concat(datasets, axis=1)
+
+        if preprocess_X is None:
+            return df.to_numpy()
+        else:
+            return preprocess_X(df)
+
+    def y(self, Model):
         """ y for scikit-learn estimators
         """
-        return pd.concat([self.claim_count, self.claim_paid], axis=1).values
+        input_X_datasets, input_y_datasets, preprocess_X, preprocess_y = (
+            Model.get_datasets_format()
+        )
+
+        if input_y_datasets is None:
+            datasets = None
+        else:
+            datasets = [
+                getattr(self, dataset_name) for dataset_name in input_y_datasets
+            ]
+
+        if isinstance(self.claim_count, pd.DataFrame):
+            return pd.concat(datasets, axis=1).to_numpy()
+        else:
+            return kl.concat(datasets, axis=1).to_numpy()
