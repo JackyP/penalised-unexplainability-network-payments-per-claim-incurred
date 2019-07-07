@@ -27,6 +27,7 @@ except ImportError:
 
 EPSILON = 0.00001
 
+
 default_device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
@@ -423,9 +424,10 @@ class PUNPPCIClaimRegressor(BaseEstimator, NeuralNetRegressor):
         lr_range=[0.1, 0.01, 0.001, 0.0001, 0.00001, 0.000001, 0.0000001, 0.00000001],
         patience=2,
         clipnorm=0.1,
-    ):
 
+    ):
         self.device = device
+
         self.optimizer = optimizer
 
         self.feature_dimension = feature_dimension
@@ -437,7 +439,6 @@ class PUNPPCIClaimRegressor(BaseEstimator, NeuralNetRegressor):
         self.layer_size = layer_size
 
         self.lr_range = lr_range
-
         self.l1_l2_linear = l1_l2_linear
         self.l2_weights_residual = l2_weights_residual
         self.l2_bias_residual = l2_bias_residual
