@@ -27,6 +27,8 @@ except ImportError:
 
 EPSILON = 0.00001
 
+default_device = "cuda" if torch.cuda.is_available() else "cpu"
+
 
 class PUNPPCIClaimModule(nn.Module):
     def __init__(
@@ -413,6 +415,7 @@ class PUNPPCIClaimRegressor(BaseEstimator, NeuralNetRegressor):
         l1_l2_linear=0.001,
         l2_weights_residual=0.01,
         l2_bias_residual=0.01,
+        device=default_device,
         # Leave these parameters alone generally:
         batch_size=5000,
         optimizer=torch.optim.Adam,
@@ -420,16 +423,9 @@ class PUNPPCIClaimRegressor(BaseEstimator, NeuralNetRegressor):
         lr_range=[0.1, 0.01, 0.001, 0.0001, 0.00001, 0.000001, 0.0000001, 0.00000001],
         patience=2,
         clipnorm=0.1,
-        # input_X_datasets=["origin"],
-        # input_y_datasets=["claim_count", "claim_paid"],
     ):
 
-        # self.input_X_datasets = input_X_datasets
-        # self.input_y_datasets = input_y_datasets
-        # self.origin_transformer = None
-        # self.categorical_transformer = None
-        # self.variate_transformer = None
-
+        self.device = device
         self.optimizer = optimizer
 
         self.feature_dimension = feature_dimension
@@ -441,8 +437,7 @@ class PUNPPCIClaimRegressor(BaseEstimator, NeuralNetRegressor):
         self.layer_size = layer_size
 
         self.lr_range = lr_range
-        # self.lr_bias = lr_bias
-        # self.momentum = momentum
+
         self.l1_l2_linear = l1_l2_linear
         self.l2_weights_residual = l2_weights_residual
         self.l2_bias_residual = l2_bias_residual
@@ -516,7 +511,7 @@ class PUNPPCIClaimRegressor(BaseEstimator, NeuralNetRegressor):
         gradclip = GradientNormClipping(gradient_clip_value=self.clipnorm)
 
         if X.shape[0] < self.batch_size:
-            warn("Data size is small, outcomes may be odd.")
+            print("NOTE: Data size is small, outcomes may be odd.")
             batch_size = X.shape[0]
         else:
             batch_size = self.batch_size
