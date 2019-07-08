@@ -424,7 +424,6 @@ class PUNPPCIClaimRegressor(BaseEstimator, NeuralNetRegressor):
         lr_range=[0.1, 0.01, 0.001, 0.0001, 0.00001, 0.000001, 0.0000001, 0.00000001],
         patience=2,
         clipnorm=0.1,
-
     ):
         self.device = device
 
@@ -537,6 +536,7 @@ class PUNPPCIClaimRegressor(BaseEstimator, NeuralNetRegressor):
                 **kwargs,
                 max_epochs=self.max_epochs,
                 lr=lr,
+                device=self.device,
                 optimizer=self.optimizer,
                 # optimizer__momentum=self.momentum,
                 optimizer__param_groups=[
@@ -611,6 +611,7 @@ class PUNPPCIClaimRegressor(BaseEstimator, NeuralNetRegressor):
             ),
             max_epochs=expected_epoch_count,
             lr=self.lr_min,
+            device=self.device,
             optimizer=self.optimizer,
             # optimizer__momentum=self.momentum,
             optimizer__param_groups=[
