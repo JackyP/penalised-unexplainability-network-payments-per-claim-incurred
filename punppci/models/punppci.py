@@ -254,18 +254,18 @@ class PUNPPCIClaimModule(nn.Module):
         count_s = self.count_spread
         paid_s = count_s + self.paid_spread
 
-        count_dev_linear = wc * torch.exp(count_linear + F.log_softmax(count_s))
-        paid_dev_linear = wp * torch.exp(paid_linear + F.log_softmax(paid_s))
+        count_dev_linear = wc * torch.exp(count_linear + F.log_softmax(count_s, dim=0))
+        paid_dev_linear = wp * torch.exp(paid_linear + F.log_softmax(paid_s, dim=0))
 
         # Spread - Residual
         count_sr = self.count_residual_spread(torch.cat((Xr3, Xr0), 1))
         paid_sr = count_sr + self.paid_residual_spread(torch.cat((Xr3, Xr0), 1))
 
         count_dev_residual = wc * torch.exp(
-            count_linear + count_residual + F.log_softmax(count_s + count_sr)
+            count_linear + count_residual + F.log_softmax(count_s + count_sr, dim=0)
         )
         paid_dev_residual = wp * torch.exp(
-            paid_linear + paid_residual + F.log_softmax(paid_s + paid_sr)
+            paid_linear + paid_residual + F.log_softmax(paid_s + paid_sr, dim=0)
         )
 
         # Blended
