@@ -39,7 +39,7 @@ class PUNPPCIClaimModule(nn.Module):
         cat_dim=None,
         y_mean=None,
         nonlin=F.selu,
-        device="cpu",
+        device=default_device,
         layer_size=100,
     ):
         super(PUNPPCIClaimModule, self).__init__()
