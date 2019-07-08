@@ -39,9 +39,7 @@ class PUNPPCIClaimModule(nn.Module):
         cat_dim=None,
         y_mean=None,
         nonlin=F.selu,
-        # l1_l2_lin_pricing=0.001,
-        # l1_l2_res_pricing=0.001,
-        # dense_layers_pricing=3,
+        device="cpu",
         layer_size=100,
     ):
         super(PUNPPCIClaimModule, self).__init__()
@@ -90,8 +88,12 @@ class PUNPPCIClaimModule(nn.Module):
         else:
             self.n_embed = 0
 
-        # self.l1_l2_lin_pricing = l1_l2_lin_pricing
-        # self.l1_l2_res_pricing = l1_l2_res_pricing
+        # Device check
+        self.device = device
+        if self.device == "cuda":
+            self.long_type = torch.cuda.LongTensor
+        elif self.device == "cpu":
+            self.long_type = torch.LongTensor
 
         # Pricing - Neural Network
         self.non_lin_0 = nonlin
@@ -198,7 +200,7 @@ class PUNPPCIClaimModule(nn.Module):
             # Linear embedding weights
 
             embeds_lin_count = [
-                emb(Xxx.type(torch.LongTensor))
+                emb(Xxx.type(self.long_type))
                 for Xxx, emb in zip(
                     Xx[1 : (self.n_embed + 1)], self.embeddings_linear_count
                 )
@@ -207,7 +209,7 @@ class PUNPPCIClaimModule(nn.Module):
             Xelc = torch.squeeze(torch.cat(embeds_lin_count, 2), dim=1)
 
             embeds_lin_paid = [
-                emb(Xxx.type(torch.LongTensor))
+                emb(Xxx.type(self.long_type))
                 for Xxx, emb in zip(
                     Xx[1 : (self.n_embed + 1)], self.embeddings_linear_paid
                 )
@@ -216,7 +218,7 @@ class PUNPPCIClaimModule(nn.Module):
             Xelp = torch.squeeze(torch.cat(embeds_lin_paid, 2), dim=1)
 
             embeds_res = [
-                emb(Xxx.type(torch.LongTensor))
+                emb(Xxx.type(self.long_type))
                 for Xxx, emb in zip(
                     Xx[1 : (self.n_embed + 1)], self.embeddings_residual
                 )
@@ -531,6 +533,7 @@ class PUNPPCIClaimRegressor(BaseEstimator, NeuralNetRegressor):
                     cat_dim=self.categorical_dimensions,
                     y_mean=y_mean,
                     layer_size=self.layer_size,
+                    device=self.device,
                 ),
                 *args,
                 **kwargs,
@@ -608,6 +611,7 @@ class PUNPPCIClaimRegressor(BaseEstimator, NeuralNetRegressor):
                 cat_dim=self.categorical_dimensions,
                 y_mean=y_mean,
                 layer_size=self.layer_size,
+                device=self.device,
             ),
             max_epochs=expected_epoch_count,
             lr=self.lr_min,
